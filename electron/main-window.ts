@@ -1,21 +1,24 @@
-import { BrowserWindow, shell } from "electron";
+import { app, BrowserWindow, shell } from "electron";
 import { getPlatform } from "./utils/get-device-specs";
 import { join } from "path";
-import COMMAND from "./constants/commands";
+import { ELECTRON_COMMANDS } from "../common/electron-commands";
 import { fetchLocalStorage } from "./utils/config-variables";
 import electronIsDev from "electron-is-dev";
 import { format } from "url";
+import { autoUpdater } from "electron-updater";
 
 let mainWindow: BrowserWindow | undefined;
 
 const createMainWindow = () => {
   console.log("📂 DIRNAME", __dirname);
+  console.log("🚃 App Path: ", app.getAppPath());
+
   mainWindow = new BrowserWindow({
     icon: join(__dirname, "build", "icon.png"),
     width: 1300,
     height: 940,
     minHeight: 500,
-    minWidth: 500,
+    minWidth: 600,
     show: false,
     backgroundColor: "#171717",
     webPreferences: {
@@ -49,7 +52,24 @@ const createMainWindow = () => {
 
   fetchLocalStorage();
 
-  mainWindow.webContents.send(COMMAND.OS, getPlatform());
+  if (!electronIsDev) {
+    console.log("🚀 Checking for updates");
+    mainWindow.webContents
+      .executeJavaScript('localStorage.getItem("autoUpdate");', true)
+      .then((lastSaved: string | null) => {
+        if (
+          lastSaved === null ||
+          lastSaved === undefined ||
+          lastSaved === "true"
+        ) {
+          autoUpdater.checkForUpdates();
+        } else {
+          console.log("🚀 Auto Update is disabled");
+        }
+      });
+  }
+
+  mainWindow.webContents.send(ELECTRON_COMMANDS.OS, getPlatform());
 
   mainWindow.setMenuBarVisibility(false);
 };

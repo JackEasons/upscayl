@@ -1,13 +1,8 @@
-import fs, { rmdir } from "fs";
+import fs from "fs";
 import { getMainWindow } from "../main-window";
 import {
   childProcesses,
-  customModelsFolderPath,
-  noImageProcessing,
-  outputFolderPath,
-  saveOutputFolder,
-  setCompression,
-  setNoImageProcessing,
+  savedCustomModelsPath,
   setStopped,
   stopped,
 } from "../utils/config-variables";
@@ -16,105 +11,96 @@ import { spawnUpscayl } from "../utils/spawn-upscayl";
 import { getBatchArguments } from "../utils/get-arguments";
 import slash from "../utils/slash";
 import { modelsPath } from "../utils/get-resource-paths";
-import COMMAND from "../constants/commands";
-import convertAndScale from "../utils/convert-and-scale";
-import DEFAULT_MODELS from "../constants/models";
+import { ELECTRON_COMMANDS } from "../../common/electron-commands";
 import { BatchUpscaylPayload } from "../../common/types/types";
+import showNotification from "../utils/show-notification";
+import { MODELS } from "../../common/models-list";
 
 const batchUpscayl = async (event, payload: BatchUpscaylPayload) => {
   const mainWindow = getMainWindow();
   if (!mainWindow) return;
-  // GET THE MODEL
+
+  const tileSize = payload.tileSize;
+  const compression = payload.compression;
+  const ttaMode = payload.ttaMode;
+  const scale = payload.scale;
+  const useCustomWidth = payload.useCustomWidth;
+  const customWidth = useCustomWidth ? payload.customWidth : "";
   const model = payload.model;
   const gpuId = payload.gpuId;
   const saveImageAs = payload.saveImageAs;
-
   // GET THE IMAGE DIRECTORY
-  let inputDir = payload.batchFolderPath;
+  let inputDir = decodeURIComponent(payload.batchFolderPath);
   // GET THE OUTPUT DIRECTORY
-  let outputDir = payload.outputPath;
-  if (saveOutputFolder === true && outputFolderPath) {
-    outputDir = outputFolderPath;
+  let outputFolderPath = decodeURIComponent(payload.outputPath);
+  const outputFolderName = `upscayl_${saveImageAs}_${model}_${
+    useCustomWidth ? `${customWidth}px` : `${scale}x`
+  }`;
+  outputFolderPath += slash + outputFolderName;
+  // CREATE THE OUTPUT DIRECTORY
+  if (!fs.existsSync(outputFolderPath)) {
+    fs.mkdirSync(outputFolderPath, { recursive: true });
   }
 
-  setNoImageProcessing(payload.noImageProcessing);
-  setCompression(parseInt(payload.compression));
-
-  const isDefaultModel = DEFAULT_MODELS.includes(model);
-
-  let initialScale = "4";
-  if (model.includes("x1")) {
-    initialScale = "1";
-  } else if (model.includes("x2")) {
-    initialScale = "2";
-  } else if (model.includes("x3")) {
-    initialScale = "3";
-  } else {
-    initialScale = "4";
-  }
-  const desiredScale = payload.scale as string;
-
-  outputDir +=
-    slash +
-    `upscayl_${model}_x${noImageProcessing ? initialScale : desiredScale}`;
-  if (!fs.existsSync(outputDir)) {
-    fs.mkdirSync(outputDir, { recursive: true });
-  }
-
-  // Delete .DS_Store files
-  fs.readdirSync(inputDir).forEach((file) => {
-    if (file === ".DS_Store") {
-      logit("🗑️ Deleting .DS_Store file");
-      fs.unlinkSync(inputDir + slash + file);
-    }
-  });
+  const isDefaultModel = model in MODELS;
 
   // UPSCALE
   const upscayl = spawnUpscayl(
-    "realesrgan",
-    getBatchArguments(
+    getBatchArguments({
       inputDir,
-      outputDir,
-      isDefaultModel ? modelsPath : customModelsFolderPath ?? modelsPath,
+      outputDir: outputFolderPath,
+      modelsPath: isDefaultModel
+        ? modelsPath
+        : (savedCustomModelsPath ?? modelsPath),
       model,
       gpuId,
-      "png",
-      initialScale
-    ),
-    logit
+      saveImageAs,
+      scale,
+      customWidth,
+      compression,
+      tileSize,
+      ttaMode,
+    }),
+    logit,
   );
 
   childProcesses.push(upscayl);
 
   setStopped(false);
   let failed = false;
+  let encounteredError = false;
 
   const onData = (data: any) => {
     if (!mainWindow) return;
     data = data.toString();
     mainWindow.webContents.send(
-      COMMAND.FOLDER_UPSCAYL_PROGRESS,
-      data.toString()
+      ELECTRON_COMMANDS.FOLDER_UPSCAYL_PROGRESS,
+      data.toString(),
     );
-    if (data.includes("invalid") || data.includes("failed")) {
-      logit("❌ INVALID GPU OR INVALID FILES IN FOLDER - FAILED");
-      failed = true;
-      upscayl.kill();
+    if (
+      (data as string).includes("Error") ||
+      (data as string).includes("failed")
+    ) {
+      logit("❌ ", data);
+      encounteredError = true;
+      onError(data);
+    } else if (data.includes("Resizing")) {
+      mainWindow.webContents.send(ELECTRON_COMMANDS.SCALING_AND_CONVERTING);
     }
   };
   const onError = (data: any) => {
     if (!mainWindow) return;
     mainWindow.setProgressBar(-1);
     mainWindow.webContents.send(
-      COMMAND.FOLDER_UPSCAYL_PROGRESS,
-      data.toString()
+      ELECTRON_COMMANDS.FOLDER_UPSCAYL_PROGRESS,
+      data.toString(),
     );
     failed = true;
     upscayl.kill();
     mainWindow &&
       mainWindow.webContents.send(
-        COMMAND.UPSCAYL_ERROR,
-        "Error upscaling image. Error: " + data
+        ELECTRON_COMMANDS.UPSCAYL_ERROR,
+        `Error upscaling images! ${data}`,
       );
     return;
   };
@@ -122,44 +108,18 @@ const batchUpscayl = async (event, payload: BatchUpscaylPayload) => {
     if (!mainWindow) return;
     if (!failed && !stopped) {
       logit("💯 Done upscaling");
-      logit("♻ Scaling and converting now...");
       upscayl.kill();
-      mainWindow && mainWindow.webContents.send(COMMAND.SCALING_AND_CONVERTING);
-      if (noImageProcessing) {
-        logit("🚫 Skipping scaling and converting");
-        mainWindow.setProgressBar(-1);
-        mainWindow.webContents.send(COMMAND.FOLDER_UPSCAYL_DONE, outputDir);
-        return;
-      }
-
-      const files = fs.readdirSync(inputDir);
-      try {
-        files.forEach(async (file) => {
-          console.log("Filename: ", file.slice(0, -3));
-          await convertAndScale(
-            inputDir + slash + file,
-            outputDir + slash + file.slice(0, -3) + "png",
-            outputDir + slash + file.slice(0, -3) + saveImageAs,
-            desiredScale,
-            saveImageAs,
-            onError
-          );
-          // Remove the png file (default) if the saveImageAs is not png
-          if (saveImageAs !== "png") {
-            logit("Removing output PNG");
-            fs.unlinkSync(outputDir + slash + file.slice(0, -3) + "png");
-          }
-        });
-        mainWindow.webContents.send(COMMAND.FOLDER_UPSCAYL_DONE, outputDir);
-      } catch (error) {
-        logit("❌ Error processing (scaling and converting) the image.", error);
-        upscayl.kill();
-        mainWindow &&
-          mainWindow.webContents.send(
-            COMMAND.UPSCAYL_ERROR,
-            "Error processing (scaling and converting) the image. Please report this error on Upscayl GitHub Issues page.\n" +
-              error
-          );
+      mainWindow.webContents.send(
+        ELECTRON_COMMANDS.FOLDER_UPSCAYL_DONE,
+        outputFolderPath,
+      );
+      if (!encounteredError) {
+        showNotification("Upscayled", "Images upscayled successfully!");
+      } else {
+        showNotification(
+          "Upscayled",
+          "Images were upscayled but encountered some errors!",
+        );
       }
     } else {
       upscayl.kill();
