@@ -1,9 +1,9 @@
 import { MessageBoxOptions, app, dialog } from "electron";
 import { getMainWindow } from "../main-window";
-import { imagePath, setImagePath } from "../utils/config-variables";
+import { savedImagePath, setSavedImagePath } from "../utils/config-variables";
 import logit from "../utils/logit";
 import settings from "electron-settings";
-import { featureFlags } from "../../common/feature-flags";
+import { FEATURE_FLAGS } from "../../common/feature-flags";
 
 const selectFile = async () => {
   const mainWindow = getMainWindow();
@@ -11,7 +11,7 @@ const selectFile = async () => {
   const { canceled, filePaths, bookmarks } = await dialog.showOpenDialog({
     properties: ["openFile"],
     title: "Select Image",
-    defaultPath: imagePath,
+    defaultPath: savedImagePath,
     securityScopedBookmarks: true,
     message: "Select Image to Upscale",
     filters: [
@@ -21,17 +21,19 @@ const selectFile = async () => {
           "png",
           "jpg",
           "jpeg",
+          "jfif",
           "webp",
           "PNG",
           "JPG",
           "JPEG",
+          "JFIF",
           "WEBP",
         ],
       },
     ],
   });
 
-  if (featureFlags.APP_STORE_BUILD && bookmarks && bookmarks.length > 0) {
+  if (FEATURE_FLAGS.APP_STORE_BUILD && bookmarks && bookmarks.length > 0) {
     console.log("🚨 Setting Bookmark: ", bookmarks);
     settings.set("file-bookmarks", bookmarks[0]);
   }
@@ -40,7 +42,7 @@ const selectFile = async () => {
     logit("🚫 File Operation Cancelled");
     return null;
   } else {
-    setImagePath(filePaths[0]);
+    setSavedImagePath(filePaths[0]);
 
     let isValid = false;
     // READ SELECTED FILES
@@ -50,10 +52,12 @@ const selectFile = async () => {
         file.endsWith(".png") ||
         file.endsWith(".jpg") ||
         file.endsWith(".jpeg") ||
+        file.endsWith(".jfif") ||
         file.endsWith(".webp") ||
         file.endsWith(".JPG") ||
         file.endsWith(".PNG") ||
         file.endsWith(".JPEG") ||
+        file.endsWith(".JFIF") ||
         file.endsWith(".WEBP")
       ) {
         isValid = true;

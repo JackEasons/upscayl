@@ -1,30 +1,25 @@
 import fs from "fs";
 import { modelsPath } from "../utils/get-resource-paths";
-import COMMAND from "../constants/commands";
+import { ELECTRON_COMMANDS } from "../../common/electron-commands";
 import {
-  compression,
-  customModelsFolderPath,
-  folderPath,
-  noImageProcessing,
-  outputFolderPath,
-  overwrite,
-  saveOutputFolder,
+  savedCustomModelsPath,
   setChildProcesses,
-  setCompression,
-  setNoImageProcessing,
-  setOverwrite,
   setStopped,
   stopped,
 } from "../utils/config-variables";
-import convertAndScale from "../utils/convert-and-scale";
 import { getSingleImageArguments } from "../utils/get-arguments";
 import logit from "../utils/logit";
 import slash from "../utils/slash";
 import { spawnUpscayl } from "../utils/spawn-upscayl";
 import { parse } from "path";
-import DEFAULT_MODELS from "../constants/models";
 import { getMainWindow } from "../main-window";
 import { ImageUpscaylPayload } from "../../common/types/types";
+import { ImageFormat } from "../types/types";
+import showNotification from "../utils/show-notification";
+import getFilenameFromPath from "../../common/get-file-name";
+import decodePath from "../../common/decode-path";
+import getDirectoryFromPath from "../../common/get-directory-from-path";
+import { MODELS } from "../../common/models-list";
 
 const imageUpscayl = async (event, payload: ImageUpscaylPayload) => {
   const mainWindow = getMainWindow();
@@ -34,63 +29,49 @@ const imageUpscayl = async (event, payload: ImageUpscaylPayload) => {
     return;
   }
 
-  setOverwrite(payload.overwrite);
-  setNoImageProcessing(payload.noImageProcessing);
-  setCompression(parseInt(payload.compression));
-
+  // GET VARIABLES
+  const tileSize = payload.tileSize;
+  const compression = payload.compression;
+  const ttaMode = payload.ttaMode;
+  const scale = payload.scale;
+  const useCustomWidth = payload.useCustomWidth;
+  const customWidth = useCustomWidth ? payload.customWidth : "";
   const model = payload.model as string;
   const gpuId = payload.gpuId as string;
-  const saveImageAs = payload.saveImageAs as string;
-
-  let inputDir = (payload.imagePath.match(/(.*)[\/\\]/)?.[1] || "") as string;
-  let outputDir: string | undefined =
-    folderPath || (payload.outputPath as string);
-
-  if (saveOutputFolder === true && outputFolderPath) {
-    outputDir = outputFolderPath;
-  }
-
-  const isDefaultModel = DEFAULT_MODELS.includes(model);
-
-  const fullfileName = payload.imagePath.replace(/^.*[\\\/]/, "") as string;
-  const fileName = parse(fullfileName).name;
-  const fileExt = parse(fullfileName).ext;
-
-  let initialScale = "4";
-  if (model.includes("x1")) {
-    initialScale = "1";
-  } else if (model.includes("x2")) {
-    initialScale = "2";
-  } else if (model.includes("x3")) {
-    initialScale = "3";
-  } else {
-    initialScale = "4";
-  }
-
-  const desiredScale = payload.scale;
+  const saveImageAs = payload.saveImageAs as ImageFormat;
+  const overwrite = payload.overwrite as boolean;
+  const imagePath = decodePath(payload.imagePath);
+  let inputDir = getDirectoryFromPath(imagePath);
+  let outputDir = decodePath(payload.outputPath);
+  const fileNameWithExt = getFilenameFromPath(imagePath);
+  const fileName = parse(fileNameWithExt).name;
 
   const outFile =
     outputDir +
     slash +
     fileName +
     "_upscayl_" +
-    (noImageProcessing ? initialScale : desiredScale) +
-    "x_" +
+    (useCustomWidth ? `${customWidth}px_` : `${scale}x_`) +
     model +
     "." +
     saveImageAs;
+
+  const isDefaultModel = model in MODELS;
+
+  // Check if windows can write the new filename to the file system
+  if (outFile.length >= 255) {
+    logit("Filename too long for Windows.");
+    mainWindow.webContents.send(
+      ELECTRON_COMMANDS.UPSCAYL_ERROR,
+      "The filename exceeds the maximum path length allowed by Windows. Please shorten the filename or choose a different save location.",
+    );
+  }
 
   // UPSCALE
   if (fs.existsSync(outFile) && !overwrite) {
     // If already upscayled, just output that file
     logit("✅ Already upscayled at: ", outFile);
-    mainWindow.webContents.send(
-      COMMAND.UPSCAYL_DONE,
-      outFile.replace(
-        /([^/\\]+)$/i,
-        encodeURIComponent(outFile.match(/[^/\\]+$/i)![0])
-      )
-    );
+    mainWindow.webContents.send(ELECTRON_COMMANDS.UPSCAYL_DONE, outFile);
   } else {
     logit(
       "✅ Upscayl Variables: ",
@@ -99,55 +80,65 @@ const imageUpscayl = async (event, payload: ImageUpscaylPayload) => {
         gpuId,
         saveImageAs,
         inputDir,
+        fileNameWithExt,
         outputDir,
-        fullfileName,
-        fileName,
-        initialScale: initialScale,
-        desiredScale,
         outFile,
+        fileName,
+        scale,
         compression,
-      })
+        customWidth,
+        useCustomWidth,
+        tileSize,
+      }),
     );
     const upscayl = spawnUpscayl(
-      "realesrgan",
-      getSingleImageArguments(
-        inputDir,
-        fullfileName,
-        outFile.slice(0, -3) + "png",
-        isDefaultModel ? modelsPath : customModelsFolderPath ?? modelsPath,
+      getSingleImageArguments({
+        inputDir: decodeURIComponent(inputDir),
+        fileNameWithExt: decodeURIComponent(fileNameWithExt),
+        outFile,
+        modelsPath: isDefaultModel
+          ? modelsPath
+          : (savedCustomModelsPath ?? modelsPath),
         model,
-        initialScale,
+        scale,
         gpuId,
-        "png"
-      ),
-      logit
+        saveImageAs,
+        customWidth,
+        compression,
+        tileSize,
+        ttaMode,
+      }),
+      logit,
     );
 
     setChildProcesses(upscayl);
 
     setStopped(false);
-    let isAlpha = false;
     let failed = false;
 
     const onData = (data: string) => {
-      logit("image upscayl: ", data.toString());
+      logit(data.toString());
       mainWindow.setProgressBar(parseFloat(data.slice(0, data.length)) / 100);
       data = data.toString();
-      mainWindow.webContents.send(COMMAND.UPSCAYL_PROGRESS, data.toString());
-      if (data.includes("invalid gpu") || data.includes("failed")) {
-        logit("❌ INVALID GPU OR FAILED");
+      mainWindow.webContents.send(
+        ELECTRON_COMMANDS.UPSCAYL_PROGRESS,
+        data.toString(),
+      );
+      if (data.includes("Error") || data.includes("failed")) {
         upscayl.kill();
         failed = true;
-      }
-      if (data.includes("has alpha channel")) {
-        logit("📢 INCLUDES ALPHA CHANNEL, CHANGING OUTFILE NAME!");
-        isAlpha = true;
+        onError(data);
+      } else if (data.includes("Resizing")) {
+        mainWindow.webContents.send(ELECTRON_COMMANDS.SCALING_AND_CONVERTING);
       }
     };
     const onError = (data) => {
       if (!mainWindow) return;
       mainWindow.setProgressBar(-1);
-      mainWindow.webContents.send(COMMAND.UPSCAYL_PROGRESS, data.toString());
+      mainWindow.webContents.send(
+        ELECTRON_COMMANDS.UPSCAYL_ERROR,
+        data.toString(),
+      );
       failed = true;
       upscayl.kill();
       return;
@@ -155,58 +146,11 @@ const imageUpscayl = async (event, payload: ImageUpscaylPayload) => {
     const onClose = async () => {
       if (!failed && !stopped) {
         logit("💯 Done upscaling");
-        logit("♻ Scaling and converting now...");
-        if (noImageProcessing) {
-          logit("🚫 Skipping scaling and converting");
-          mainWindow.setProgressBar(-1);
-          mainWindow.webContents.send(
-            COMMAND.UPSCAYL_DONE,
-            outFile.replace(
-              /([^/\\]+)$/i,
-              encodeURIComponent(outFile.match(/[^/\\]+$/i)![0])
-            )
-          );
-          return;
-        }
-        mainWindow.webContents.send(COMMAND.SCALING_AND_CONVERTING);
         // Free up memory
         upscayl.kill();
-        try {
-          await convertAndScale(
-            inputDir + slash + fullfileName,
-            outFile.slice(0, -3) + "png",
-            outFile,
-            desiredScale,
-            saveImageAs,
-            onError
-          );
-          // Remove the png file (default) if the saveImageAs is not png
-          fs.access(outFile.slice(0, -3) + "png", fs.constants.F_OK, (err) => {
-            if (!err && saveImageAs !== "png") {
-              logit("🗑 Removing png file");
-              fs.unlinkSync(outFile.slice(0, -3) + "png");
-            }
-          });
-          mainWindow.setProgressBar(-1);
-          mainWindow.webContents.send(
-            COMMAND.UPSCAYL_DONE,
-            outFile.replace(
-              /([^/\\]+)$/i,
-              encodeURIComponent(outFile.match(/[^/\\]+$/i)![0])
-            )
-          );
-        } catch (error) {
-          logit(
-            "❌ Error processing (scaling and converting) the image. Please report this error on GitHub.",
-            error
-          );
-          upscayl.kill();
-          mainWindow.webContents.send(
-            COMMAND.UPSCAYL_ERROR,
-            "Error processing (scaling and converting) the image. Please report this error on Upscayl GitHub Issues page.\n" +
-              error
-          );
-        }
+        mainWindow.setProgressBar(-1);
+        mainWindow.webContents.send(ELECTRON_COMMANDS.UPSCAYL_DONE, outFile);
+        showNotification("Upscayl", "Image upscayled successfully!");
       }
     };
 

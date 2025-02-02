@@ -1,17 +1,20 @@
 import { app, dialog } from "electron";
-import { folderPath, setFolderPath } from "../utils/config-variables";
+import {
+  savedBatchUpscaylFolderPath,
+  setSavedBatchUpscaylFolderPath,
+} from "../utils/config-variables";
 import logit from "../utils/logit";
 import settings from "electron-settings";
-import { featureFlags } from "../../common/feature-flags";
+import { FEATURE_FLAGS } from "../../common/feature-flags";
 
 const selectFolder = async (event, message) => {
   let closeAccess;
   const folderBookmarks = await settings.get("folder-bookmarks");
-  if (featureFlags.APP_STORE_BUILD && folderBookmarks) {
+  if (FEATURE_FLAGS.APP_STORE_BUILD && folderBookmarks) {
     logit("🚨 Folder Bookmarks: ", folderBookmarks);
     try {
       closeAccess = app.startAccessingSecurityScopedResource(
-        folderBookmarks as string
+        folderBookmarks as string,
       );
     } catch (error) {
       logit("📁 Folder Bookmarks Error: ", error);
@@ -24,11 +27,11 @@ const selectFolder = async (event, message) => {
     bookmarks,
   } = await dialog.showOpenDialog({
     properties: ["openDirectory"],
-    defaultPath: folderPath,
+    defaultPath: savedBatchUpscaylFolderPath,
     securityScopedBookmarks: true,
   });
 
-  if (featureFlags.APP_STORE_BUILD && bookmarks && bookmarks.length > 0) {
+  if (FEATURE_FLAGS.APP_STORE_BUILD && bookmarks && bookmarks.length > 0) {
     console.log("🚨 Setting folder Bookmark: ", bookmarks);
     await settings.set("folder-bookmarks", bookmarks[0]);
   }
@@ -37,8 +40,8 @@ const selectFolder = async (event, message) => {
     logit("🚫 Select Folder Operation Cancelled");
     return null;
   } else {
-    setFolderPath(folderPaths[0]);
-    logit("📁 Selected Folder Path: ", folderPath);
+    setSavedBatchUpscaylFolderPath(folderPaths[0]);
+    logit("📁 Selected Folder Path: ", savedBatchUpscaylFolderPath);
     return folderPaths[0];
   }
 };
